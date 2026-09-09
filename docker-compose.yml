@@ -8,7 +8,7 @@ services:
     build: ./python-app
     environment:
       - REDIS_URL=redis://redis:6379
-      - CACHE_TTL_SECONDS=15
+      - CACHE_TTL_SECONDS=8 # shortened on this branch so the stale window is easy to observe live
     depends_on:
       - redis
     ports:

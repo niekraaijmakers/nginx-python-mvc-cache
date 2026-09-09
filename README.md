@@ -11,6 +11,17 @@ The lesson focus: **cache the read (`GET /api/items`), never cache the
 write (`POST /api/items`), and invalidate the cache the moment a write
 happens.**
 
+> **This is the `demo/stale-content` branch.** It shortens the cache TTL to
+> 8s and adds `scripts/demo-stale-content.sh`, a scripted walkthrough that
+> deliberately reproduces stale content: it warms the cache, writes new
+> data, and shows NGINX still serving the old response for a few seconds
+> even though the app-level (Redis) cache was already invalidated. Run it
+> with:
+> ```bash
+> ./scripts/demo-stale-content.sh
+> ```
+> See `main` for the plain, non-shortened-TTL version of this demo.
+
 ## MVC structure
 
 ```
