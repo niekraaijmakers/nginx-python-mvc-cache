@@ -8,6 +8,11 @@ services:
       # inspect it directly (e.g. with `sqlite3` or a GUI browser) without
       # touching Docker.
       - ./python-app/data:/data
+      # Bind-mount the app source over what was baked into the image, so
+      # edits on the host take effect live - paired with uvicorn's
+      # --reload in the Dockerfile, no `docker compose up --build` needed
+      # for Python/template/static changes.
+      - ./python-app/app:/usr/src/app/app
     ports:
       - "4000:3000" # exposed directly too, so you can compare with/without NGINX
 
