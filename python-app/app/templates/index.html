@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Caching Demo</title>
+  <!-- Cached separately from this page, with a much longer TTL - see
+       nginx/nginx.conf's /static/ location. -->
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>Caching Demo</h1>
+    <p class="subtitle">
+      This whole page (including the item list below) is server-rendered
+      HTML, and <strong>this page itself is what NGINX caches</strong> -
+      not a JSON API response. Look at the <code>X-Cache-Status</code>
+      response header (e.g. via <code>curl -i</code> or your browser's
+      network tab) to see MISS/HIT/EXPIRED.
+    </p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <h2>Add an item</h2>
+      <form method="post" action="/items">
+        <input type="text" name="name" placeholder="item name" required>
+        <button type="submit">Create</button>
+      </form>
+      <p class="hint">
+        Submitting this form is a real write (never cached), but reloading
+        this page afterwards is a normal GET - and this whole page is
+        cacheable, so whether your new item shows up immediately depends
+        entirely on this branch's caching behavior.
+      </p>
+    </section>
+
+    <section class="panel">
+      <h2>Items ({{ count }})</h2>
+      <table>
+        <thead>
+          <tr><th>Name</th><th>Created at</th></tr>
+        </thead>
+        <tbody>
+          {% for item in items %}
+          <tr>
+            <td>{{ item.name }}</td>
+            <td>{{ item.createdAt }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="2" class="empty">No items yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <p class="computed-at">Rendered at: <span id="computed-at">{{ computed_at }}</span></p>
+  </main>
+
+  <!-- Also cached separately by NGINX, alongside style.css. -->
+  <script src="/static/app.js"></script>
+</body>
+</html>

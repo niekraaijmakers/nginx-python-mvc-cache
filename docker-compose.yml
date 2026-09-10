@@ -3,7 +3,7 @@ services:
     build: ./python-app
     environment:
       - DB_PATH=/data/app.db
-      - NGINX_CACHE_ROOT=/nginx-cache
+      - NGINX_PAGE_CACHE_ROOT=/nginx-cache/pages
       - NGINX_CACHE_HOST=localhost
     volumes:
       # Bind-mount the real database file to the host so interns can

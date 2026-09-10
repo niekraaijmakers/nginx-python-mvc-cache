@@ -9,15 +9,20 @@ lower-tech alternative interns can actually understand end to end: NGINX's
 disk cache is *just files*, named deterministically from the request. If
 you know the naming scheme, you can delete the file yourself.
 
-How NGINX names a cache file (see nginx/nginx.conf):
-    proxy_cache_path /var/cache/nginx levels=1:2 ...
+How NGINX names a cache file (see nginx/nginx.conf's PAGE_CACHE zone,
+which is what covers GET /):
+    proxy_cache_path /var/cache/nginx/pages levels=1:2 ...
     proxy_cache_key  "$scheme$request_method$host$request_uri"
 
-1. Build the same key string NGINX builds, e.g. "httpGETlocalhost/api/items".
+1. Build the same key string NGINX builds, e.g. "httpGETlocalhost/".
 2. MD5 it - NGINX hashes the cache key with MD5 by default.
 3. The file lives at: <cache_root>/<last 1 hex char>/<next 2 hex chars>/<full 32-hex md5>
    (that's what `levels=1:2` means: split the *end* of the hash into two
    sub-directories of length 1 and 2).
+
+This only targets the PAGE_CACHE (the `GET /` HTML page) - it deliberately
+does NOT touch STATIC_CACHE (/static/*), since static assets don't change
+when an item is created and should keep their own, much longer TTL.
 
 This is deliberately naive and NOT how you'd purge a cache in production:
 - It only works because we know the exact key ahead of time (fixed host,
@@ -41,12 +46,13 @@ show the other end of that trade-off.
 import hashlib
 import os
 
-# Must match nginx.conf's proxy_cache_path root.
-CACHE_ROOT = os.environ.get("NGINX_CACHE_ROOT", "/nginx-cache")
+# Must match nginx.conf's proxy_cache_path root for the PAGE_CACHE zone
+# (i.e. /var/cache/nginx/pages, not the STATIC_CACHE zone's directory).
+CACHE_ROOT = os.environ.get("NGINX_PAGE_CACHE_ROOT", "/nginx-cache/pages")
 
 # Must match the $host NGINX sees on incoming requests for this demo -
-# every request in this workshop is made against "localhost" (curl,
-# Swagger UI, browser), so it's safe to fix this rather than guess it.
+# every request in this workshop is made against "localhost" (curl or a
+# browser), so it's safe to fix this rather than guess it.
 CACHE_HOST = os.environ.get("NGINX_CACHE_HOST", "localhost")
 
 
@@ -61,14 +67,15 @@ def _cache_file_path(method: str, uri: str) -> str:
     return os.path.join(CACHE_ROOT, level1, level2, digest)
 
 
-def purge_items_overview_cache() -> bool:
-    """Delete the cached GET /api/items response from disk, if present.
+def purge_index_page_cache() -> bool:
+    """Delete the cached GET / (item list page) response from disk, if
+    present.
 
     Returns True if a cache file was found and removed, False if there
     was nothing cached (e.g. it had already expired, or nobody had read
     it yet). Safe to call unconditionally after every write.
     """
-    path = _cache_file_path("GET", "/api/items")
+    path = _cache_file_path("GET", "/")
     try:
         os.remove(path)
         return True
