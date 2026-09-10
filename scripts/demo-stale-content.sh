@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Demonstrates the "stale content" problem: NGINX is the ONLY cache in this
 # system, and it has no way to be actively invalidated - a write is durable
-# in the database immediately, but the cached HTTP response for GET
-# /api/items keeps serving the old body until its own TTL expires.
+# in the database immediately, but the cached HTML page for GET / keeps
+# serving the old body until its own TTL expires.
 #
 # Usage: ./scripts/demo-stale-content.sh
 set -euo pipefail
@@ -32,38 +32,42 @@ done
 curl -s "$BASE/healthz"; echo
 
 step "1) Cold read — warms the NGINX cache"
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
-show "(body)"
-curl -s "$BASE/api/items"; echo
+curl -s -i "$BASE/" | grep -Ei "^HTTP|X-Cache-Status"
 
 step "2) Repeat read — now served entirely from NGINX's cache (app never sees it)"
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
+curl -s -i "$BASE/" | grep -Ei "^HTTP|X-Cache-Status"
 
-step "3) Write — POST a new item. Durable in SQLite immediately, never cached itself"
-curl -s -i -X POST "$BASE/api/items" -H 'Content-Type: application/json' \
-     -d '{"name":"widget"}' | grep -Ei "^HTTP|Cache-Control"
+step "3) Write — POST a new item via the HTML form. Durable in SQLite immediately, never cached itself"
+curl -s -i -X POST "$BASE/items" -H 'Content-Type: application/x-www-form-urlencoded' \
+     -d 'name=widget' | grep -Ei "^HTTP|Location|Cache-Control"
 
-step "4) STALE READ — read again immediately, through NGINX"
+step "4) STALE READ — read the page again immediately, through NGINX"
 show "There is no app-level cache to invalidate anymore - NGINX is the only"
 show "cache in the system, and nothing tells it the underlying data changed."
-show "Expect X-Cache-Status: HIT and a body that is MISSING the new item."
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
-curl -s "$BASE/api/items"; echo
+show "Expect X-Cache-Status: HIT and a page that is MISSING the new item."
+curl -s -i "$BASE/" | grep -Ei "^HTTP|X-Cache-Status"
+if curl -s "$BASE/" | grep -qi widget; then
+  show "(unexpected: 'widget' IS in the cached page already)"
+else
+  show "(as expected: 'widget' is NOT in the cached page yet)"
+fi
 
 step "5) Proof the data really is there — bypass NGINX, hit the app (and DB) directly"
-curl -s "http://localhost:4000/api/items"; echo
+curl -s "http://localhost:4000/" | grep -i widget && show "(found directly in the app's rendered page)"
 
 step "6) Waiting out NGINX's cache TTL (2 minutes) ..."
 sleep 125
 
 step "7) Read again — NGINX cache expired, revalidates against the app, now fresh"
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
-curl -s "$BASE/api/items"; echo
+curl -s -i "$BASE/" | grep -Ei "^HTTP|X-Cache-Status"
+if curl -s "$BASE/" | grep -qi widget; then
+  show "(as expected: 'widget' now appears in the freshly-cached page)"
+fi
 
 step "Done. Key takeaway:"
 show "With a single cache and no invalidation mechanism, 'the write succeeded'"
 show "and 'the write is visible' are two different moments in time. The gap"
 show "between them is exactly the cache's TTL. Closing that gap requires"
 show "either a shorter TTL (more origin load), an active purge mechanism"
-show "(ngx_cache_purge, Lua, a CDN purge API), or simply not caching that"
+show "(see the demo/cache-busting branch), or simply not caching that"
 show "route/verb at all - which is why POST is never cached here."
