@@ -8,3 +8,7 @@ node_modules/
 # nginx/cache/.gitkeep) but don't commit cached files themselves.
 nginx/cache/*
 !nginx/cache/.gitkeep
+
+# Same idea for the SQLite "database" file - keep the folder, not the data.
+python-app/data/*
+!python-app/data/.gitkeep
