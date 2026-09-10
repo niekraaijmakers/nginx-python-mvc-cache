@@ -15,6 +15,11 @@ services:
       # actively purge a cache entry by deleting its file directly - see
       # app/models/cache_buster.py.
       - ./nginx/cache:/nginx-cache
+      # Bind-mount the app source over what was baked into the image, so
+      # edits on the host take effect live - paired with uvicorn's
+      # --reload in the Dockerfile, no `docker compose up --build` needed
+      # for Python/template/static changes.
+      - ./python-app/app:/usr/src/app/app
     ports:
       - "4000:3000" # exposed directly too, so you can compare with/without NGINX
 
