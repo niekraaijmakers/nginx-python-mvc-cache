@@ -5,5 +5,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY run.py ./
 EXPOSE 3000
-# --timeout 5: don't let a hung worker (e.g. blocked on Redis) sit forever
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:3000", "--timeout", "5", "run:app"]
+# --timeout-keep-alive default fine; workers=2 for a bit of concurrency
+CMD ["uvicorn", "run:app", "--host", "0.0.0.0", "--port", "3000", "--workers", "2"]
