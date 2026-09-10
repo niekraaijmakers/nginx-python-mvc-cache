@@ -15,16 +15,18 @@ picture, that's true here. A write doesn't (and can't) tell NGINX "forget
 what you cached." The cached response only goes stale-then-fresh on its
 own TTL.
 
-> **This is the `demo/stale-content` branch.** It shortens NGINX's cache
-> TTL to 8s and adds `scripts/demo-stale-content.sh`, a scripted walkthrough
-> that deliberately reproduces stale content: it warms the cache, writes
-> new data, and shows NGINX still serving the old response for a few
-> seconds even though the write is already durable in the database. Run
+> **This is the `demo/stale-content` branch.** It sets NGINX's cache
+> TTL to 2 minutes (long enough to comfortably click through Swagger UI
+> or type curl commands by hand without racing the clock) and adds
+> `scripts/demo-stale-content.sh`, a scripted walkthrough that
+> deliberately reproduces stale content: it warms the cache, writes
+> new data, and shows NGINX still serving the old response for a while
+> even though the write is already durable in the database. Run
 > it with:
 > ```bash
 > ./scripts/demo-stale-content.sh
 > ```
-> See `main` for the plain, non-shortened-TTL (15s) version of this demo.
+> See `main` for the plain, shorter-TTL (15s) version of this demo.
 
 ## Easy UI: Swagger / OpenAPI docs
 

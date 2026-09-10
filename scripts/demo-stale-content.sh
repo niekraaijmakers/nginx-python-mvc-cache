@@ -53,8 +53,8 @@ curl -s "$BASE/api/items"; echo
 step "5) Proof the data really is there — bypass NGINX, hit the app (and DB) directly"
 curl -s "http://localhost:4000/api/items"; echo
 
-step "6) Waiting out NGINX's cache TTL (8s) ..."
-sleep 9
+step "6) Waiting out NGINX's cache TTL (2 minutes) ..."
+sleep 125
 
 step "7) Read again — NGINX cache expired, revalidates against the app, now fresh"
 curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
