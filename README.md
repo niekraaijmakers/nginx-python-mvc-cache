@@ -1,26 +1,30 @@
-# Caching Demo — Python MVC + caching layers
+# Caching Demo — Python MVC + one cache (NGINX)
 
 A modern equivalent of the classic "Java app behind an Apache HTTPD reverse
-proxy" caching lab, built with a Python MVC (FastAPI) server instead:
+proxy" caching lab, built with a Python MVC (FastAPI) server and kept
+deliberately simple: **there is exactly one cache in this whole system.**
 
 ```
-client -> NGINX (reverse proxy cache) -> FastAPI app (Model/View/Controller) -> Redis (app cache + "DB")
+client -> NGINX (the only cache) -> FastAPI app (Model/View/Controller) -> SQLite (real database)
 ```
 
 The lesson focus: **cache the read (`GET /api/items`), never cache the
-write (`POST /api/items`), and invalidate the cache the moment a write
-happens.**
+write (`POST /api/items`), and understand what it means when a cache has
+no way to be actively invalidated** — because with only NGINX in the
+picture, that's true here. A write doesn't (and can't) tell NGINX "forget
+what you cached." The cached response only goes stale-then-fresh on its
+own TTL.
 
-> **This is the `demo/stale-content` branch.** It shortens the cache TTL to
-> 8s and adds `scripts/demo-stale-content.sh`, a scripted walkthrough that
-> deliberately reproduces stale content: it warms the cache, writes new
-> data, and shows NGINX still serving the old response for a few seconds
-> even though the app-level (Redis) cache was already invalidated. Run it
-> with:
+> **This is the `demo/stale-content` branch.** It shortens NGINX's cache
+> TTL to 8s and adds `scripts/demo-stale-content.sh`, a scripted walkthrough
+> that deliberately reproduces stale content: it warms the cache, writes
+> new data, and shows NGINX still serving the old response for a few
+> seconds even though the write is already durable in the database. Run
+> it with:
 > ```bash
 > ./scripts/demo-stale-content.sh
 > ```
-> See `main` for the plain, non-shortened-TTL version of this demo.
+> See `main` for the plain, non-shortened-TTL (15s) version of this demo.
 
 ## Easy UI: Swagger / OpenAPI docs
 
@@ -33,16 +37,15 @@ required to try things out:
 - **Raw schema:** http://localhost:8080/openapi.json
 
 Open `/docs`, expand `GET /api/items`, click **Try it out → Execute**
-a couple of times, then do the same for `POST /api/items` — response
-headers (`X-App-Cache`, `Cache-Control`) are visible right in the UI.
-(Browser dev tools / "Network" tab is the easiest way to also see NGINX's
-`X-Cache-Status` header, since Swagger UI's response panel doesn't show it.)
+a couple of times, then do the same for `POST /api/items`. Use your
+browser's dev tools "Network" tab to see NGINX's `X-Cache-Status` header
+(Swagger UI's own response panel doesn't surface it).
 
 ## See the cache as real files (no Docker knowledge needed)
 
 The NGINX cache directory is bind-mounted to `nginx/cache/` on your own
-machine (see `docker-compose.yml`). While the stack is running, you can
-browse it like any other folder:
+machine (see `docker-compose.yml`). While the stack is running, browse it
+like any other folder:
 
 ```bash
 find nginx/cache -type f          # locate the cached response file(s)
@@ -54,41 +57,56 @@ You'll see something like:
 ```
 KEY: httpGETlocalhost/api/items
 HTTP/1.1 200 OK
-cache-control: public, max-age=15
-x-app-cache: MISS
+cache-control: no-store
 
-{"items":[],"count":0,"computedAt":"..."}
+{"items":[...],"count":1,"computedAt":"..."}
 ```
 
-That's it — NGINX caches the *entire raw HTTP response* (status line,
-headers, and body) as one file, named by a hash of the cache key, in
-subfolders (`levels=1:2` in `nginx.conf`). No `docker exec`, no database
-client, just files on disk.
+NGINX caches the *entire raw HTTP response* (status line, headers, body)
+as one file, named by a hash of the cache key, sharded into subfolders
+(`levels=1:2` in `nginx.conf`). No `docker exec`, no special tooling.
 
-To reset the cache by hand: `rm -rf nginx/cache/*` while the stack is
-running (NGINX will just treat it as a fresh empty cache and repopulate
-on the next request).
+Reset the cache by hand: `rm -rf nginx/cache/*` while the stack is running
+(NGINX just treats it as empty and repopulates on the next request).
+
+## See the database as a real file too
+
+The SQLite database is bind-mounted to `python-app/data/app.db`. Inspect
+the real data directly, any time, even with the stack stopped:
+
+```bash
+sqlite3 python-app/data/app.db "SELECT * FROM items;"
+```
+
+This is deliberately a separate file from the NGINX cache — proof that
+"the database" and "the cache" are two different things, even though
+it's easy to blur them together once everything runs in Docker.
 
 ## MVC structure
 
 ```
 python-app/
   app/
-    models/items_model.py       # Redis access + domain logic (the only place touching Redis)
+    models/db.py                # the real database (SQLite) - no caching logic at all
+    models/items_model.py       # business logic: reads/writes db.py, no caching here either
     views/items_view.py         # Pydantic schemas: response/request shapes (also power /docs)
     controllers/items_controller.py  # FastAPI routes -> model -> schema
 ```
 
-- **Model** (`items_model.py`): owns two Redis keys —
-  `items:store` (a Redis list = "the database") and
-  `items:overview:cache` (the cached, precomputed list overview, TTL 15s).
+- **Database** (`db.py`): a plain SQLite table (`items`). Source of truth,
+  knows nothing about caching.
+- **Model** (`items_model.py`): reads/writes the database. Also has no
+  caching logic — on purpose, to make the point that **caching lives
+  entirely at the infrastructure layer (NGINX) in this demo**, invisible
+  to application code.
 - **View** (`items_view.py`): Pydantic models (`Item`, `ItemsOverview`,
   `CreateItemRequest`) define request/response shapes — FastAPI uses these
   both to validate input and to generate the `/docs` UI.
-- **Controller** (`items_controller.py`): `GET /api/items` reads via the
-  cache-aside pattern; `POST /api/items` writes to the store and then
-  deletes the cache key so the very next read is fresh. Cache headers
-  (`Cache-Control`, `X-App-Cache`) are set here per-route.
+- **Controller** (`items_controller.py`): routes -> model -> schema. Sets
+  `Cache-Control: no-store` on the POST/health responses (a hint to any
+  cache that might exist) but does **not** set caching headers on the GET
+  response — NGINX's `proxy_cache_valid` in `nginx.conf` is the single
+  source of truth for that route's cache lifetime.
 
 ## Run it
 
@@ -96,18 +114,17 @@ python-app/
 docker compose up --build
 ```
 
-- `http://localhost:8080` — through NGINX (reverse proxy cache)
-- `http://localhost:4000` — straight to FastAPI, bypassing NGINX (compare!)
+- `http://localhost:8080` — through NGINX (the cache)
+- `http://localhost:4000` — straight to FastAPI, bypassing NGINX entirely (no cache at all here)
 
 ## Endpoints
 
-- `GET /api/items` — list overview, simulates a slow aggregation (0.75s).
-  Cached in Redis (app) and by NGINX (reverse proxy), TTL 15s.
-  Response header `X-App-Cache: HIT|MISS` shows the app-level cache result;
-  `X-Cache-Status` (added by NGINX) shows the reverse-proxy cache result.
-- `POST /api/items` — creates an item (`{"name": "..."}`). Never cached
-  anywhere (`Cache-Control: no-store`), and immediately invalidates the
-  app-level cache so the list is fresh on the next `GET`.
+- `GET /api/items` — list overview, simulates a slow query (0.75s) against
+  the real SQLite database. Cacheable by NGINX, TTL 15s.
+  `X-Cache-Status` (added by NGINX) shows `MISS`/`HIT`/`EXPIRED`.
+- `POST /api/items` — creates an item (`{"name": "..."}`) in SQLite. Never
+  cached (`Cache-Control: no-store`), and `proxy_cache_methods GET HEAD`
+  in `nginx.conf` guarantees NGINX structurally can't cache it either.
 - `GET /healthz` — health check, never cached.
 
 ## Suggested exercises
@@ -117,51 +134,40 @@ docker compose up --build
    curl -i http://localhost:8080/api/items
    curl -i http://localhost:8080/api/items
    ```
-   First call: `X-App-Cache: MISS`, `X-Cache-Status: MISS`, ~0.75s+.
-   Second call (within 15s): both `HIT`, instant — NGINX doesn't even reach
-   the app on the second call; check the app logs to prove it.
+   First call: `X-Cache-Status: MISS`, ~0.75s+. Second call (within 15s):
+   `X-Cache-Status: HIT`, instant — NGINX never even reaches the app;
+   check `docker compose logs python-app` to prove it.
 
-2. **See the write bust the cache immediately.**
+2. **Write, then see the cache NOT update.**
    ```bash
-   curl -i http://localhost:8080/api/items    # warm the cache (HIT on repeat)
+   curl -i http://localhost:8080/api/items    # warm the cache
    curl -i -X POST http://localhost:8080/api/items \
         -H 'Content-Type: application/json' -d '{"name":"widget"}'
-   curl -i http://localhost:8080/api/items    # should show the new item right away
+   curl -i http://localhost:8080/api/items    # look closely...
    ```
-   The POST response is always uncached. Notice the very next GET recomputes
-   (`X-App-Cache: MISS` at the app layer) instead of waiting out the 15s TTL
-   — that's active invalidation vs. passive expiry.
+   That last GET will likely still show `X-Cache-Status: HIT` **and a body
+   missing the item you just created** — because there is nothing in this
+   system that tells NGINX to forget its cached copy. Compare with:
+   ```bash
+   curl http://localhost:4000/api/items       # bypasses NGINX - proves the data IS there
+   ```
+   This is the core lesson of a single-cache, TTL-only system: a write is
+   correct and durable immediately in the database, but *visible* only
+   after the cache's TTL expires (or you don't cache that route/verb at all).
 
-3. **NGINX still has a stale window.** Immediately after step 2's POST, the
-   *NGINX* cache entry from before the write may still be within its own
-   15s TTL and could serve a stale response until it expires — open
-   discussion point: reverse-proxy caches typically can't be told
-   "invalidate this URL now" without extra tooling (e.g. `ngx_cache_purge`,
-   a Lua module, or a CDN purge API). This is exactly why write endpoints
-   must never be routed through a cache in the first place, and why GET/POST
-   need different caching rules, as this demo enforces.
+3. **Wait it out.** Wait 15+ seconds after the write and repeat the GET
+   through NGINX — `X-Cache-Status: EXPIRED`, and the new item appears.
 
 4. **Confirm POST is structurally never cacheable.** Repeat the POST call
-   several times and see `X-Cache-Status` is always `MISS` or absent —
-   `proxy_cache_methods GET HEAD` in `nginx/nginx.conf` makes this a
-   guarantee, not a convention.
+   several times; `proxy_cache_methods GET HEAD` in `nginx/nginx.conf`
+   makes this a guarantee, not a convention.
 
-5. **Break Redis on purpose.**
-   ```bash
-   docker compose stop redis
-   curl -i http://localhost:4000/api/items
-   ```
-   The app should still respond (slower, `X-App-Cache: MISS`) instead of
-   hanging or crashing — the model uses short Redis timeouts to "fail open".
-   Note: in this simplified demo the "database" (`items:store`) also lives
-   in Redis, so you'll get an empty list back rather than real data; the
-   point of the exercise is purely "does the request hang or return
-   promptly?" — in a real system the cache and the database are separate
-   infrastructure, so this failure mode would just mean slower, uncached
-   reads, not empty ones.
-   ```bash
-   docker compose start redis
-   ```
+5. **Discuss: how would you fix exercise 2's staleness window?** Options
+   worth raising with interns: shorten the TTL (trades staleness for more
+   origin load), add a second cache layer with active invalidation (which
+   is what an earlier version of this demo did with Redis), use an NGINX
+   purge mechanism (`ngx_cache_purge`, Lua, a CDN purge API), or simply
+   accept the staleness window as a product decision for this endpoint.
 
 ## Cleanup
 

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Demonstrates the "stale content" problem: NGINX's reverse-proxy cache can
-# keep serving an old response for a write it doesn't know happened, even
-# though the app-level (Redis) cache was already correctly invalidated.
+# Demonstrates the "stale content" problem: NGINX is the ONLY cache in this
+# system, and it has no way to be actively invalidated - a write is durable
+# in the database immediately, but the cached HTTP response for GET
+# /api/items keeps serving the old body until its own TTL expires.
 #
 # Usage: ./scripts/demo-stale-content.sh
 set -euo pipefail
@@ -20,7 +21,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-step "Starting the stack (NGINX + Flask MVC + Redis)"
+step "Starting the stack (NGINX + FastAPI MVC + SQLite)"
 docker compose up --build -d
 
 step "Waiting for the app to become healthy"
@@ -30,38 +31,39 @@ for i in $(seq 1 30); do
 done
 curl -s "$BASE/healthz"; echo
 
-step "1) Cold read — warms both the app cache (Redis) and the NGINX cache"
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-App-Cache|X-Cache-Status"
+step "1) Cold read — warms the NGINX cache"
+curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
 show "(body)"
 curl -s "$BASE/api/items"; echo
 
 step "2) Repeat read — now served entirely from NGINX's cache (app never sees it)"
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-App-Cache|X-Cache-Status"
+curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
 
-step "3) Write — POST a new item. Never cached, and busts the Redis app cache"
+step "3) Write — POST a new item. Durable in SQLite immediately, never cached itself"
 curl -s -i -X POST "$BASE/api/items" -H 'Content-Type: application/json' \
      -d '{"name":"widget"}' | grep -Ei "^HTTP|Cache-Control"
 
-step "4) STALE READ — read again immediately"
-show "The app-level cache was already invalidated in step 3, but NGINX still"
-show "has its own cached copy from step 1/2 and doesn't know about the write."
+step "4) STALE READ — read again immediately, through NGINX"
+show "There is no app-level cache to invalidate anymore - NGINX is the only"
+show "cache in the system, and nothing tells it the underlying data changed."
 show "Expect X-Cache-Status: HIT and a body that is MISSING the new item."
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-App-Cache|X-Cache-Status"
+curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
 curl -s "$BASE/api/items"; echo
 
-step "5) Proof the data really is there — bypass NGINX, hit the app directly"
+step "5) Proof the data really is there — bypass NGINX, hit the app (and DB) directly"
 curl -s "http://localhost:4000/api/items"; echo
 
 step "6) Waiting out NGINX's cache TTL (8s) ..."
 sleep 9
 
 step "7) Read again — NGINX cache expired, revalidates against the app, now fresh"
-curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-App-Cache|X-Cache-Status"
+curl -s -i "$BASE/api/items" | grep -Ei "^HTTP|X-Cache-Status"
 curl -s "$BASE/api/items"; echo
 
 step "Done. Key takeaway:"
-show "Cache invalidation (Redis) != cache purge (NGINX). Deleting your app-level"
-show "cache entry does not reach into a reverse proxy's/CDN's cache. Without an"
-show "explicit purge mechanism (ngx_cache_purge, Lua, or a CDN purge API), a"
-show "reverse-proxy cache can only be relied on to expire via its own TTL -"
-show "which is exactly why write endpoints should never be routed through a cache."
+show "With a single cache and no invalidation mechanism, 'the write succeeded'"
+show "and 'the write is visible' are two different moments in time. The gap"
+show "between them is exactly the cache's TTL. Closing that gap requires"
+show "either a shorter TTL (more origin load), an active purge mechanism"
+show "(ngx_cache_purge, Lua, a CDN purge API), or simply not caching that"
+show "route/verb at all - which is why POST is never cached here."
