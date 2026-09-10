@@ -8,25 +8,26 @@ deliberately simple: **there is exactly one cache in this whole system.**
 client -> NGINX (the only cache) -> FastAPI app (Model/View/Controller) -> SQLite (real database)
 ```
 
-The lesson focus: **cache the read (`GET /api/items`), never cache the
-write (`POST /api/items`), and understand what it means when a cache has
-no way to be actively invalidated** — because with only NGINX in the
-picture, that's true here. A write doesn't (and can't) tell NGINX "forget
-what you cached." The cached response only goes stale-then-fresh on its
-own TTL.
+The lesson focus on this branch: **an active cache purge can collapse the
+"write succeeded but isn't visible yet" gap to effectively zero** — a
+successful `POST /api/items` deletes the NGINX cache file for
+`GET /api/items` directly off disk, so the very next read is always fresh,
+no matter how long the TTL is. Compare with `demo/stale-content`, where
+the exact same architecture has *no* purge and relies purely on the TTL.
 
-> **This is the `demo/stale-content` branch.** It sets NGINX's cache
-> TTL to 2 minutes (long enough to comfortably click through Swagger UI
-> or type curl commands by hand without racing the clock) and adds
-> `scripts/demo-stale-content.sh`, a scripted walkthrough that
-> deliberately reproduces stale content: it warms the cache, writes
-> new data, and shows NGINX still serving the old response for a while
-> even though the write is already durable in the database. Run
-> it with:
+> **This is the `demo/cache-busting` branch.** NGINX's cache TTL stays a
+> generous 2 minutes, but `POST /api/items` actively deletes the cached
+> GET response's file from disk right after writing to SQLite (see
+> `python-app/app/models/cache_buster.py` for exactly how, and its
+> trade-offs — this is a deliberately low-tech stand-in for a real purge
+> mechanism like `ngx_cache_purge`, an OpenResty/Lua endpoint, or a CDN
+> purge API, none of which are installed here). Run the scripted
+> walkthrough with:
 > ```bash
-> ./scripts/demo-stale-content.sh
+> ./scripts/demo-cache-busting.sh
 > ```
-> See `main` for the plain, shorter-TTL (15s) version of this demo.
+> See `demo/stale-content` for the same architecture *without* a purge
+> mechanism, and `main` for the plain baseline.
 
 ## Easy UI: Swagger / OpenAPI docs
 
@@ -122,11 +123,15 @@ docker compose up --build
 ## Endpoints
 
 - `GET /api/items` — list overview, simulates a slow query (0.75s) against
-  the real SQLite database. Cacheable by NGINX, TTL 15s.
+  the real SQLite database. Cacheable by NGINX, TTL 2 minutes — but on
+  this branch, that TTL almost never gets a chance to matter (see below).
   `X-Cache-Status` (added by NGINX) shows `MISS`/`HIT`/`EXPIRED`.
 - `POST /api/items` — creates an item (`{"name": "..."}`) in SQLite. Never
-  cached (`Cache-Control: no-store`), and `proxy_cache_methods GET HEAD`
-  in `nginx.conf` guarantees NGINX structurally can't cache it either.
+  cached itself (`Cache-Control: no-store`, and `proxy_cache_methods
+  GET HEAD` in `nginx.conf` guarantees NGINX structurally can't cache it),
+  and **additionally purges the cached GET response** by deleting its
+  on-disk cache file (`X-Cache-Purged: true`/`nothing-cached`) — see
+  `python-app/app/models/cache_buster.py`.
 - `GET /healthz` — health check, never cached.
 
 ## Suggested exercises
@@ -136,40 +141,49 @@ docker compose up --build
    curl -i http://localhost:8080/api/items
    curl -i http://localhost:8080/api/items
    ```
-   First call: `X-Cache-Status: MISS`, ~0.75s+. Second call (within 15s):
-   `X-Cache-Status: HIT`, instant — NGINX never even reaches the app;
-   check `docker compose logs python-app` to prove it.
+   First call: `X-Cache-Status: MISS`, ~0.75s+. Second call: `X-Cache-Status:
+   HIT`, instant — NGINX never even reaches the app; check
+   `docker compose logs python-app` to prove it.
 
-2. **Write, then see the cache NOT update.**
+2. **Write, then see the cache get busted immediately.**
    ```bash
    curl -i http://localhost:8080/api/items    # warm the cache
    curl -i -X POST http://localhost:8080/api/items \
         -H 'Content-Type: application/json' -d '{"name":"widget"}'
    curl -i http://localhost:8080/api/items    # look closely...
    ```
-   That last GET will likely still show `X-Cache-Status: HIT` **and a body
-   missing the item you just created** — because there is nothing in this
-   system that tells NGINX to forget its cached copy. Compare with:
+   The POST response includes `X-Cache-Purged: true`. The very next GET
+   shows `X-Cache-Status: MISS` (not a stale `HIT`!) even though the
+   2-minute TTL has barely started, and the body **includes the new
+   item**. Compare this with the `demo/stale-content` branch, where the
+   exact same sequence gives you a stale `HIT` missing the new item.
+
+3. **Look at how the purge actually works.** Open
+   `python-app/app/models/cache_buster.py` — it reproduces NGINX's own
+   cache-key hashing and on-disk file layout (`levels=1:2` in
+   `nginx.conf`) to compute exactly which file to delete, then just
+   deletes it. You can watch the file disappear yourself:
    ```bash
-   curl http://localhost:4000/api/items       # bypasses NGINX - proves the data IS there
+   ls nginx/cache/*/*/*        # note a file's path after warming the cache
+   curl -X POST http://localhost:8080/api/items -d '{"name":"x"}' \
+        -H 'Content-Type: application/json'
+   ls nginx/cache/*/*/*        # that file is gone
    ```
-   This is the core lesson of a single-cache, TTL-only system: a write is
-   correct and durable immediately in the database, but *visible* only
-   after the cache's TTL expires (or you don't cache that route/verb at all).
 
-3. **Wait it out.** Wait 15+ seconds after the write and repeat the GET
-   through NGINX — `X-Cache-Status: EXPIRED`, and the new item appears.
+4. **Confirm POST is structurally never cacheable, purge aside.** Repeat
+   the POST call several times; `proxy_cache_methods GET HEAD` in
+   `nginx/nginx.conf` makes this a guarantee, not a convention — the
+   purge in step 2 is a separate, additional mechanism on top of that.
 
-4. **Confirm POST is structurally never cacheable.** Repeat the POST call
-   several times; `proxy_cache_methods GET HEAD` in `nginx/nginx.conf`
-   makes this a guarantee, not a convention.
-
-5. **Discuss: how would you fix exercise 2's staleness window?** Options
-   worth raising with interns: shorten the TTL (trades staleness for more
-   origin load), add a second cache layer with active invalidation (which
-   is what an earlier version of this demo did with Redis), use an NGINX
-   purge mechanism (`ngx_cache_purge`, Lua, a CDN purge API), or simply
-   accept the staleness window as a product decision for this endpoint.
+5. **Discuss: why isn't this how you'd purge a cache in production?**
+   `cache_buster.py`'s docstring lists the trade-offs: it only works
+   because the cache key is 100% predictable (fixed host, fixed path, no
+   query strings, no per-user variation) and because the app and NGINX
+   happen to share the same on-disk directory. A real system with
+   unpredictable keys or multiple cache nodes needs a proper mechanism —
+   `ngx_cache_purge`, an OpenResty/Lua purge endpoint, or a CDN's purge
+   API — that can target arbitrary keys across every node, not just
+   delete a file we already knew the name of.
 
 ## Cleanup
 
