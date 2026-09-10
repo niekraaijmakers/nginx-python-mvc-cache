@@ -27,6 +27,37 @@ headers (`X-App-Cache`, `Cache-Control`) are visible right in the UI.
 (Browser dev tools / "Network" tab is the easiest way to also see NGINX's
 `X-Cache-Status` header, since Swagger UI's response panel doesn't show it.)
 
+## See the cache as real files (no Docker knowledge needed)
+
+The NGINX cache directory is bind-mounted to `nginx/cache/` on your own
+machine (see `docker-compose.yml`). While the stack is running, you can
+browse it like any other folder:
+
+```bash
+find nginx/cache -type f          # locate the cached response file(s)
+cat nginx/cache/<the file path>    # read the raw cached HTTP response
+```
+
+You'll see something like:
+
+```
+KEY: httpGETlocalhost/api/items
+HTTP/1.1 200 OK
+cache-control: public, max-age=15
+x-app-cache: MISS
+
+{"items":[],"count":0,"computedAt":"..."}
+```
+
+That's it — NGINX caches the *entire raw HTTP response* (status line,
+headers, and body) as one file, named by a hash of the cache key, in
+subfolders (`levels=1:2` in `nginx.conf`). No `docker exec`, no database
+client, just files on disk.
+
+To reset the cache by hand: `rm -rf nginx/cache/*` while the stack is
+running (NGINX will just treat it as a fresh empty cache and repopulate
+on the next request).
+
 ## MVC structure
 
 ```

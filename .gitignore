@@ -3,3 +3,8 @@ __pycache__/
 .DS_Store
 node_modules/
 .idea/
+
+# NGINX cache contents are generated at runtime - keep the folder (see
+# nginx/cache/.gitkeep) but don't commit cached files themselves.
+nginx/cache/*
+!nginx/cache/.gitkeep
