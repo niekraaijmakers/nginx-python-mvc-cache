@@ -1,15 +1,31 @@
 # Caching Demo — Python MVC + caching layers
 
 A modern equivalent of the classic "Java app behind an Apache HTTPD reverse
-proxy" caching lab, built with a Python MVC (Flask) server instead:
+proxy" caching lab, built with a Python MVC (FastAPI) server instead:
 
 ```
-client -> NGINX (reverse proxy cache) -> Flask app (Model/View/Controller) -> Redis (app cache + "DB")
+client -> NGINX (reverse proxy cache) -> FastAPI app (Model/View/Controller) -> Redis (app cache + "DB")
 ```
 
 The lesson focus: **cache the read (`GET /api/items`), never cache the
 write (`POST /api/items`), and invalidate the cache the moment a write
 happens.**
+
+## Easy UI: Swagger / OpenAPI docs
+
+FastAPI auto-generates an interactive UI from the routes — no Postman/curl
+required to try things out:
+
+- **Swagger UI:** http://localhost:8080/docs (through NGINX) or
+  http://localhost:4000/docs (direct to the app)
+- **ReDoc:** http://localhost:8080/redoc
+- **Raw schema:** http://localhost:8080/openapi.json
+
+Open `/docs`, expand `GET /api/items`, click **Try it out → Execute**
+a couple of times, then do the same for `POST /api/items` — response
+headers (`X-App-Cache`, `Cache-Control`) are visible right in the UI.
+(Browser dev tools / "Network" tab is the easiest way to also see NGINX's
+`X-Cache-Status` header, since Swagger UI's response panel doesn't show it.)
 
 ## MVC structure
 
@@ -17,19 +33,20 @@ happens.**
 python-app/
   app/
     models/items_model.py       # Redis access + domain logic (the only place touching Redis)
-    views/items_view.py         # builds the HTTP/JSON response + headers
-    controllers/items_controller.py  # routes -> model -> view
+    views/items_view.py         # Pydantic schemas: response/request shapes (also power /docs)
+    controllers/items_controller.py  # FastAPI routes -> model -> schema
 ```
 
 - **Model** (`items_model.py`): owns two Redis keys —
   `items:store` (a Redis list = "the database") and
   `items:overview:cache` (the cached, precomputed list overview, TTL 15s).
-- **View** (`items_view.py`): formats JSON responses and sets cache headers
-  (`Cache-Control: public, max-age=...` for the cacheable GET,
-  `Cache-Control: no-store` for the POST response and health check).
+- **View** (`items_view.py`): Pydantic models (`Item`, `ItemsOverview`,
+  `CreateItemRequest`) define request/response shapes — FastAPI uses these
+  both to validate input and to generate the `/docs` UI.
 - **Controller** (`items_controller.py`): `GET /api/items` reads via the
   cache-aside pattern; `POST /api/items` writes to the store and then
-  deletes the cache key so the very next read is fresh.
+  deletes the cache key so the very next read is fresh. Cache headers
+  (`Cache-Control`, `X-App-Cache`) are set here per-route.
 
 ## Run it
 
@@ -38,7 +55,7 @@ docker compose up --build
 ```
 
 - `http://localhost:8080` — through NGINX (reverse proxy cache)
-- `http://localhost:4000` — straight to Flask, bypassing NGINX (compare!)
+- `http://localhost:4000` — straight to FastAPI, bypassing NGINX (compare!)
 
 ## Endpoints
 
